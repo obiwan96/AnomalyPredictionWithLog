@@ -1,6 +1,4 @@
 import pandas as pd
-from pandas.io.parsers import TextParser
-from lxml.html import parse
 from urllib.request import urlopen, Request
 from influxdb import DataFrameClient
 import yaml
@@ -22,10 +20,12 @@ def read_InDB(vnf, event):
         else:
             query='select * from "%s___memory_free___value___gauge"'%vnf['vnf_id']
     client=DataFrameClient(host,port,user,password,dbname)
-    df=client.query(qeury+' where time > now() -1d')
+    df=client.query(query+' where time > now() -1h')
     df=list(df.values())
     df=df[0].tz_convert('Asia/Seoul')
     df.index=df.index.map(lambda x : x.replace(microsecond=0))
+    df.reset_index(inplace=True)
+    df.rename(columns={'index': 'time', 'value' : event}, inplace=True)
     return df
 
 
@@ -41,8 +41,14 @@ if __name__ == '__main__':
         server_info=yaml.load(f)['InDB']
     host=server_info['ip']
     user=server_info['id']
-    password=server_info['password']
-    for vnf in vnf_list:
+    password=server_info['pwd']
+
+    data_all=[]
+    for vnf in vnf_list[:1]:
         ppt=read_InDB(vnf, 'ppt')
-        cpu=read_cpu(vnf,'cpu')
-        memory=read_memory(vnf,'memory')
+        cpu=read_InDB(vnf,'cpu')
+        memory=read_InDB(vnf,'memory')
+        data_=pd.merge(ppt, cpu, on='time', how='inner')
+        data_=pd.merge(data_, memory, on='time', how='inner')
+        data_all.append(data_)
+    data_all=pd.concat(data_all)
