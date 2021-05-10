@@ -1,6 +1,7 @@
 import nltk
 from gensim.models.word2vec import Word2Vec
 import string
+import pickle as pkl
 from string import digits
 from datetime import datetime, timedelta
 import scp
@@ -21,9 +22,30 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from keras.regularizers import l2
+from keras import backend as K
 
 cli=None
 translator=None
+
+
+#To use F1 score as metric
+#https://datascience.stackexchange.com/questions/45165/how-to-get-accuracy-f1-precision-and-recall-for-a-keras-model
+def recall_m(y_true, y_pred):
+    true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
+    possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
+    recall = true_positives / (possible_positives + K.epsilon())
+    return recall
+
+def precision_m(y_true, y_pred):
+    true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
+    predicted_positives = K.sum(K.round(K.clip(y_pred, 0, 1)))
+    precision = true_positives / (predicted_positives + K.epsilon())
+    return precision
+
+def f1_m(y_true, y_pred):
+    precision = precision_m(y_true, y_pred)
+    recall = recall_m(y_true, y_pred)
+    return 2*((precision*recall)/(precision+recall+K.epsilon()))
 
 def pre_process(text):
     #https://blog.naver.com/PostView.nhn?blogId=timtaeil&logNo=221361106051&redirect=Dlog&widgetTypeCall=true&directAccess=false
@@ -107,7 +129,6 @@ def cnn_learning(model,X,y,max_len):
     train_num=int(len(X)*0.8)
     test_num=len(X)-train_num
     X=pad_sequences(X, maxlen=max_len)
-    print(X.shape)
     X_test=X[train_num:]
     y_test=np.array(y[train_num:])
     X_train=X[:train_num]
@@ -116,9 +137,9 @@ def cnn_learning(model,X,y,max_len):
     print('X_test의 크기(shape) :',X_test.shape)
     print('y_train의 크기(shape) :',y_train.shape)
     print('y_test의 크기(shape) :',y_test.shape)'''
-    es = EarlyStopping(monitor = 'val_loss', mode = 'min', verbose = 1, patience = 3)
-    mc = ModelCheckpoint('best_model.h5', monitor = 'val_acc', mode = 'max', verbose = 1, save_best_only = True)
-    history = model.fit(X_train, y_train, epochs = 10, batch_size=50, validation_split = 0.2, callbacks=[es, mc])
+    es = EarlyStopping(monitor = 'val_loss', mode = 'min', verbose = 0, patience = 3)
+    mc = ModelCheckpoint('best_model.h5', monitor = 'val_acc', mode = 'max', verbose = 0, save_best_only = True)
+    history = model.fit(X_train, y_train, epochs = 40, batch_size=50, validation_split = 0.2, callbacks=[es, mc], verbose=1)
 
     return X_test, y_test
 
@@ -193,7 +214,7 @@ if __name__ == '__main__':
         model_output=Dense(1,activation='softmax')(z)
         model=Model(model_input, model_output)
         model.summary()
-        model.compile(optimizer='adam', loss = 'binary_crossentropy', metrics = ['acc'])
+        model.compile(optimizer='adam', loss = 'binary_crossentropy', metrics = ['acc',f1_m,precision_m, recall_m])
     else:
         model = load_model(args.model)
     win_size=20
@@ -203,6 +224,8 @@ if __name__ == '__main__':
     log_corpus=[]
     test_X=[]
     test_y=[]
+    X_len=0
+    fault_len=0
     for vnf in vnf_list:
         vnf_=vnf['vnf_name']
         print('Reading %d th VNF, %s'%(vnf['vnf_num'], vnf_))
@@ -217,32 +240,50 @@ if __name__ == '__main__':
                 log = download_log(path_,file_name,local_path)
                 log_token=pre_process(log)
                 log_corpus.extend(log_token)
+            log_corpus=sorted(log_corpus, key= lambda x : x[0])
             date=datetime.strptime(log_dir,'%m-%d')
             X=[]
             y=[]
+            fault_num=0
+            local_max_len=0
             while(date<datetime.strptime(log_dir,'%m-%d')+timedelta(days=1)):
                 input_log=[]
-                for log in log_corpus:
-                    if date<=log[0] and log[0] <date+timedelta(minutes=win_size):
-                        for word in log[1]:
-                            try:
-                                input_log.extend(wv.wv.get_vector(word))
-                            except:
-                                input_log.extend(np.zeros(100))
-                if(len(input_log)>max_len):
-                    input_log=input_log[:max_len+1]
-                X.append(input_log)
-                if (date+timedelta(minutes=gap)).strftime( '%m-%d %H:%M') in fault_history[vnf['vnf_num']]:
-                    y.append(1)
-                    date+=timedelta(minutes=gap) ## Slide to after of Fault
-                    continue
-                else:
-                    y.append(0)
+                for log in log_corpus[:]:
+                    if date>log[0]:
+                        log_corpus.remove(log)
+                    if log[0] > date+timedelta(minutes=win_size):
+                        break
+                    for word in log[1]:
+                        try:
+                            input_log.extend(wv.wv.get_vector(word))
+                        except:
+                            input_log.extend(np.zeros(embed_size))
+                if not len(input_log)==0:
+                    local_max_len = local_max_len if local_max_len > len(input_log) else len(input_log)
+                    if(len(input_log)>max_len):
+                        input_log=input_log[:max_len+1]
+                    X.append(input_log)
+                    if (date+timedelta(minutes=gap)).strftime( '%m-%d %H:%M') in fault_history[vnf['vnf_num']]:
+                        y.append(1)
+                        y.append(1)
+                        X.append(input_log) #For over Sampling
+                        date+=timedelta(minutes=gap) ## Slide to after of Fault
+                        fault_num+=2
+                        continue
+                    else:
+                        y.append(0)
                 date+=timedelta(minutes=sliding)
+            print('local max : %d'%local_max_len)
+            with open('data_gap%d_win%d.bin'%(gap, win_size), 'a+b') as f:
+                pkl.dump([X,y], f)
+            print('\n%d number of data created and %d number of them are fault'%(len(X), fault_num))
+            X_len+=len(X)
+            fault_len+=fault_num
             X,y=cnn_learning(model, X,y,max_len)
             test_X.extend(X)
             test_y.extend(y)
             log_corpus=[]
-        print("\n accuracy : %.4f"%(model.evaluate(test_X, test_y)[1]))
-        model.save("cnn")
-
+        loss, accuracy, f1_score, precision, recall = model.evaluate(test_X, test_y)
+        print("Read total %d number of data and %d of them are fault"%(X_len, fault_len))
+        print("F1 : %.4f, Acc : %.4f, Prec : %.4f, Rec : %.4f"%(f1_score, accuracy, precision, recall))
+        model.save("cnn_gap%d_win%d"%(gap, win_size))
