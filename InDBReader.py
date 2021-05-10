@@ -10,6 +10,10 @@ port=8086
 
 def read_InDB(vnf, event):
     global user, password, host, port
+    user='root'
+    password='root'
+    host='141.223.82.227'
+    port=8086
     if event == 'ppt':
         dbname='pptmon'
         query='select * from "%d"'%vnf['vnf_num']
@@ -19,8 +23,9 @@ def read_InDB(vnf, event):
             query='select * from "%s___cpu_usage___value___gauge"'%vnf['vnf_id']
         else:
             query='select * from "%s___memory_free___value___gauge"'%vnf['vnf_id']
+    query = query + " where time >= '2021-04-21 12:00:00'"
     client=DataFrameClient(host,port,user,password,dbname)
-    df=client.query(query+' where time > now() -1h')
+    df=client.query(query)
     df=list(df.values())
     df=df[0].tz_convert('Asia/Seoul')
     df.index=df.index.map(lambda x : x.replace(microsecond=0))
@@ -50,5 +55,6 @@ if __name__ == '__main__':
         memory=read_InDB(vnf,'memory')
         data_=pd.merge(ppt, cpu, on='time', how='inner')
         data_=pd.merge(data_, memory, on='time', how='inner')
+        data_.drop('time', axis=1, inplace=True)
         data_all.append(data_)
     data_all=pd.concat(data_all)
