@@ -16,6 +16,7 @@ import pandas as pd
 from influxdb import DataFrameClient
 import yaml
 import numpy as np
+import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import Embedding, Dropout, Conv1D, GlobalMaxPooling1D, Dense, Concatenate, Flatten, Input
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
@@ -124,22 +125,44 @@ def fault_tagging(vnf_num):
     fault = [x[0].strftime("%m-%d %H:%M") for x in fault]
     return fault
 
+def generator(inputs, labels):
+    #to fit with different input dimension
+    #https://github.com/keras-team/keras/issues/1920#issuecomment-410982673
+    i = 0
+    while True:
+        inputs_batch = np.expand_dims([inputs[i%len(inputs)]], axis=2)
+        labels_batch = np.array([labels[i%len(inputs)]])
+        yield inputs_batch, labels_batch
+        i+=1
 
 def cnn_learning(model,X,y,max_len):
     train_num=int(len(X)*0.8)
     test_num=len(X)-train_num
-    X=pad_sequences(X, maxlen=max_len)
+    #X=pad_sequences(X, maxlen=max_len)
+    #X_test=[np.array(x, dtype='float').reshape(len(x),1) for x in X[train_num:]]
+    X=np.array(X)
     X_test=X[train_num:]
-    y_test=np.array(y[train_num:])
     X_train=X[:train_num]
+    y_test=np.array(y[train_num:])
+    #X_train=[np.array(x, dtype='float').reshape(len(x),1) for x in X[:train_num]]
     y_train=np.array(y[:train_num])
     '''print('X_train의 크기(shape) :',X_train.shape)
     print('X_test의 크기(shape) :',X_test.shape)
     print('y_train의 크기(shape) :',y_train.shape)
     print('y_test의 크기(shape) :',y_test.shape)'''
+    X_valid=X_train[int(0.8*train_num):]
+    y_valid=y_train[int(0.8*train_num):]
+    X_train=X_train[:int(0.8*train_num)]
+    y_train=y_train[:int(0.8*train_num)]
     es = EarlyStopping(monitor = 'val_loss', mode = 'min', verbose = 0, patience = 3)
     mc = ModelCheckpoint('best_model.h5', monitor = 'val_acc', mode = 'max', verbose = 0, save_best_only = True)
-    history = model.fit(X_train, y_train, epochs = 40, batch_size=50, validation_split = 0.2, callbacks=[es, mc], verbose=1)
+    #history = model.fit(X_train, y_train, epochs = 40, validation_split = 0.2, callbacks=[es, mc], verbose=1)
+    model.fit_generator(
+    generator(X_train, y_train),
+    validation_data=generator(X_valid, y_valid),
+    steps_per_epoch=len(X_train),
+    validation_steps=len(X_valid),
+    epochs=10, verbose=1, callbacks=[es,mc])
 
     return X_test, y_test
 
@@ -181,10 +204,10 @@ if __name__ == '__main__':
             fault_ori=fault_history[vnf['vnf_num']]
             fault_new=[]
             for fault_time in fault_ori:
-                fault_new.append(datetime.strptime(fault_time, "%b-%d-%H:%M").strftime("%m-%d %H:%M"))
-            fault_new.extend(fault_tagging(vnf['vnf_num']))
+                fault_new.append([datetime.strptime(fault_time, "%b-%d-%H:%M").strftime("%m-%d %H:%M"), 'reboot'])
+            fault_new.extend([[x, 'ppt over'] for x in fault_tagging(vnf['vnf_num'])])
             fault_history[vnf['vnf_num']]=fault_new
-        with open('booting_history.yaml','w') as f:
+        with open('fault_history.yaml','w') as f:
             yaml.dump(fault_history,f)
         #print(fault_history)
         print("-------------Get Fault history END-------------")
@@ -199,7 +222,7 @@ if __name__ == '__main__':
         server_info=yaml.load(f)['log']
     cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
     if not args.model:
-        model_input=Input(shape=(max_len,1))
+        model_input=Input(shape=(None,1))
         model=Sequential()
         #model.add(Embedding(vocab_size, 32))
         #model.add(Dropout(0.2))
@@ -217,6 +240,9 @@ if __name__ == '__main__':
         model.compile(optimizer='adam', loss = 'binary_crossentropy', metrics = ['acc',f1_m,precision_m, recall_m])
     else:
         model = load_model(args.model)
+    #tf.debugging.set_log_device_placement(True)
+    #devices = tf.config.experimental.list_physical_devices('GPU')
+    #tf.config.experimental.set_memory_growth(devices[0], True)
     win_size=20
     gap=3
     sliding=1
@@ -226,10 +252,11 @@ if __name__ == '__main__':
     test_y=[]
     X_len=0
     fault_len=0
+    today=datetime.today().strftime("%m-%d")
     for vnf in vnf_list:
         vnf_=vnf['vnf_name']
         print('Reading %d th VNF, %s'%(vnf['vnf_num'], vnf_))
-        log_dir_list=date_range("04-21",datetime.today().strftime("%m-%d"))
+        log_dir_list=date_range("04-21",today)
         for j in trange(len(log_dir_list)):
             log_dir=log_dir_list[j]
             log_file_list=get_file_list(remote_path+vnf_+'/'+log_dir)
@@ -260,10 +287,10 @@ if __name__ == '__main__':
                             input_log.extend(np.zeros(embed_size))
                 if not len(input_log)==0:
                     local_max_len = local_max_len if local_max_len > len(input_log) else len(input_log)
-                    if(len(input_log)>max_len):
-                        input_log=input_log[:max_len+1]
+                    #if(len(input_log)>max_len):
+                    #    input_log=input_log[:max_len+1]
                     X.append(input_log)
-                    if (date+timedelta(minutes=gap)).strftime( '%m-%d %H:%M') in fault_history[vnf['vnf_num']]:
+                    if (date+timedelta(minutes=gap)).strftime( '%m-%d %H:%M') in [x[0] for x in fault_history[vnf['vnf_num']]]:
                         y.append(1)
                         y.append(1)
                         X.append(input_log) #For over Sampling
@@ -273,7 +300,7 @@ if __name__ == '__main__':
                     else:
                         y.append(0)
                 date+=timedelta(minutes=sliding)
-            print('local max : %d'%local_max_len)
+            print('\nlocal max : %d'%local_max_len)
             with open('data_gap%d_win%d.bin'%(gap, win_size), 'a+b') as f:
                 pkl.dump([X,y], f)
             print('\n%d number of data created and %d number of them are fault'%(len(X), fault_num))
