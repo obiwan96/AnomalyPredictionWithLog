@@ -121,7 +121,7 @@ def fault_tagging(vnf_num):
     ppt.index=ppt.index.map(lambda x : x.replace(microsecond=0, second=0))
     ppt.reset_index(inplace = True)
     ppt.rename(columns={'index' : 'time'}, inplace=True)
-    fault= ppt[ppt['value']>1000][['time']].values.tolist()
+    fault= ppt[ppt['value']>10000][['time']].values.tolist()
     fault = [x[0].strftime("%m-%d %H:%M") for x in fault]
     return fault
 
@@ -223,14 +223,14 @@ if __name__ == '__main__':
     cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
     if not args.model:
         model_input=Input(shape=(None,1))
-        model=Sequential()
+        #model=Sequential()
         #model.add(Embedding(vocab_size, 32))
         #model.add(Dropout(0.2))
         submodels=[]
         for kw in (3,4,5):
             conv=Conv1D(100, kw*embed_size, padding='valid', activation='relu', kernel_regularizer=l2(3),strides=embed_size)(model_input)
             conv=GlobalMaxPooling1D()(conv)
-            conv=Flatten()(conv)
+            #conv=Flatten()(conv)
             submodels.append(conv)
         z=Concatenate()(submodels)
         z=Dropout(0.5)(z)
@@ -285,7 +285,11 @@ if __name__ == '__main__':
                             input_log.extend(wv.wv.get_vector(word))
                         except:
                             input_log.extend(np.zeros(embed_size))
+                assert len(input_log)%embed_size==0
                 if not len(input_log)==0:
+                    if len(input_log)<5*embed_size:
+                        #input_log=pad_sequences(input_log, maxlen=5*embed_size).tolist()
+                        input_log.extend(np.zeros(5*embed_size-len(input_log)))
                     local_max_len = local_max_len if local_max_len > len(input_log) else len(input_log)
                     #if(len(input_log)>max_len):
                     #    input_log=input_log[:max_len+1]

@@ -93,7 +93,7 @@ if __name__ == '__main__':
     log_corpus=[]
     #Get file names and paths of all log file except sudo.log, CRON.log, stress-ng.log
     host_list = get_file_list(remote_path)
-    for i in range(14, len(host_list)):
+    for i in range(len(host_list)):
         host=host_list[i]
         print( "Reading from %d th HOST start. Total : %d"%(i+1, len(host_list)) )
         print(" -------HOST name : "+host+"-------------")
