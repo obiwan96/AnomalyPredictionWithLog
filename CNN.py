@@ -64,6 +64,7 @@ def pre_process(text):
     for each in text.split('\n'):
         if not each:
             continue
+        #Todo : How to use number information??
         clean.append([datetime.strptime(each[:12], "%b %d %H:%M"), [x.lower() for x in  re.sub(r'[0-9]+',
             '', each[each.find(':',19)+1:]).translate(translator).split() ]])
     return clean
@@ -134,6 +135,33 @@ def generator(inputs, labels):
         labels_batch = np.array([labels[i%len(inputs)]])
         yield inputs_batch, labels_batch
         i+=1
+def get_fault_history():
+    print("-------------Get Fault history-----------------")
+    fault_history={}
+    with open ('../server_info.yaml') as f:
+        server_info=yaml.load(f)['BootingHistory']
+    cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
+    try:
+        with SCPClient(cli.get_transport()) as scp:
+            scp.get('/home/ubuntu/fault_history.yaml',local_path)
+    except SCPException:
+        raise SCPException.message
+    with open(local_path+'fault_history.yaml')as f:
+        fault_history=yaml.load(f)
+    #I'll not use PPT
+    '''for vnf in vnf_list:
+        fault_ori=fault_history[vnf['vnf_num']]
+        fault_new=[]
+        for fault_time in fault_ori:
+            fault_new.append([datetime.strptime(fault_time, "%b-%d-%H:%M").strftime("%m-%d %H:%M"), 'reboot'])
+        fault_new.extend([[x, 'ppt over'] for x in fault_tagging(vnf['vnf_num'])])
+        fault_history[vnf['vnf_num']]=fault_new
+    with open('fault_history.yaml','w') as f:
+        yaml.dump(fault_history,f)
+    '''
+    #print(fault_history)
+    print("-------------Get Fault history END-------------")
+    return fault_history
 
 def cnn_learning(model,X,y,max_len):
     train_num=int(len(X)*0.8)
@@ -184,40 +212,17 @@ if __name__ == '__main__':
         {'vnf_num' : 4, 'vnf_id' : '75389a36-510b-41ac-9a19-380b9716c30c', 'vnf_name' : '225-2c-2', 'ip' : '10.10.10.14'},
         {'vnf_num' : 5, 'vnf_id' : 'cbe5d6e7-a490-4326-aea4-8035dc8b3d46', 'vnf_name' : '225-2c-3', 'ip' : '10.10.10.124'},
         {'vnf_num' : 6, 'vnf_id' : 'dc5422d7-9e9d-4dc4-a381-5e2bcc986667', 'vnf_name' : '225-2c-4', 'ip' : '10.10.10.26'}]
-    translator = str.maketrans('', '', string.punctuation)
+    translator = str.maketrans(string.punctuation, ' '*(len(string.punctuation)))
     cli=paramiko.SSHClient()
     cli.set_missing_host_key_policy(paramiko.AutoAddPolicy)
     if not args.fault:
-        print("-------------Get Fault history-----------------")
-        fault_history={}
-        with open ('../server_info.yaml') as f:
-            server_info=yaml.load(f)['BootingHistory']
-        cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
-        try:
-            with SCPClient(cli.get_transport()) as scp:
-                scp.get('/home/ubuntu/booting_history.yaml',local_path)
-        except SCPException:
-            raise SCPException.message
-        with open(local_path+'booting_history.yaml')as f:
-            fault_history=yaml.load(f)
-        for vnf in vnf_list:
-            fault_ori=fault_history[vnf['vnf_num']]
-            fault_new=[]
-            for fault_time in fault_ori:
-                fault_new.append([datetime.strptime(fault_time, "%b-%d-%H:%M").strftime("%m-%d %H:%M"), 'reboot'])
-            fault_new.extend([[x, 'ppt over'] for x in fault_tagging(vnf['vnf_num'])])
-            fault_history[vnf['vnf_num']]=fault_new
-        with open('fault_history.yaml','w') as f:
-            yaml.dump(fault_history,f)
-        #print(fault_history)
-        print("-------------Get Fault history END-------------")
+        fault_history=get_fault_history()
     else:
         with open(args.fault)as f:
             fault_history=yaml.load(f)
     wv= Word2Vec.load(args.emb)
     vocab_size=len(wv.wv)
     embed_size=100
-    max_len=20000
     with open ('../server_info.yaml') as f:
         server_info=yaml.load(f)['log']
     cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
@@ -243,8 +248,8 @@ if __name__ == '__main__':
     #tf.debugging.set_log_device_placement(True)
     #devices = tf.config.experimental.list_physical_devices('GPU')
     #tf.config.experimental.set_memory_growth(devices[0], True)
-    win_size=20
-    gap=3
+    win_size=5
+    gap=5
     sliding=1
 
     log_corpus=[]
@@ -256,17 +261,29 @@ if __name__ == '__main__':
     for vnf in vnf_list:
         vnf_=vnf['vnf_name']
         print('Reading %d th VNF, %s'%(vnf['vnf_num'], vnf_))
-        log_dir_list=date_range("04-21",today)
+        log_dir_list=date_range("05-11",today)
+        server='dpnm-82-'+vnf_[:3]
+        fault_=fault_history[vnf['vnf_num']]['abnormal']+fault_history[vnf['vnf_num']]['fault']
         for j in trange(len(log_dir_list)):
             log_dir=log_dir_list[j]
-            log_file_list=get_file_list(remote_path+vnf_+'/'+log_dir)
             path_=remote_path+vnf_+'/'+log_dir+'/'
+            log_file_list=get_file_list(path_)
+            for file_name in log_file_list:
+                if file_name in ['sudo.log', 'CRON.log', 'stress-ng.log']:
+                    continue
+                log = download_log(path_,file_name,local_path)
+                log_token=pre_process(log)
+                log_corpus.extend(log_token)
+            #Download the server log also
+            path_=remote_path+server+'/'+log_dir+'/'
+            log_file_list=get_file_list(path_)
             for file_name in log_file_list:
                 if file_name in ['sudo.log', 'CRON.log', 'stress-ng.log', 'apache-access.log']:
                     continue
                 log = download_log(path_,file_name,local_path)
                 log_token=pre_process(log)
                 log_corpus.extend(log_token)
+
             log_corpus=sorted(log_corpus, key= lambda x : x[0])
             date=datetime.strptime(log_dir,'%m-%d')
             X=[]
@@ -294,7 +311,7 @@ if __name__ == '__main__':
                     #if(len(input_log)>max_len):
                     #    input_log=input_log[:max_len+1]
                     X.append(input_log)
-                    if (date+timedelta(minutes=gap)).strftime( '%m-%d %H:%M') in [x[0] for x in fault_history[vnf['vnf_num']]]:
+                    if (date+timedelta(minutes=gap)).strftime( '%m-%d %H:%M') in fault_:
                         y.append(1)
                         y.append(1)
                         X.append(input_log) #For over Sampling
