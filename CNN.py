@@ -68,6 +68,18 @@ def pre_process(text):
         clean.append([datetime.strptime(each[:12], "%b %d %H:%M"), [x.lower() for x in  re.sub(r'[0-9]+',
             '', each[each.find(':',19)+1:]).translate(translator).split() ]])
     return clean
+def pre_process_error_only(text):
+    if text=='':
+        return []
+    global translator
+    clean =[]
+    for each in text.split('\n'):
+        if not 'error' in each:
+            continue
+        #Todo : How to use number information??
+        clean.append([datetime.strptime(each[:12], "%b %d %H:%M"), [x.lower() for x in  re.sub(r'[0-9]+',
+            '', each[each.find(':',19)+1:]).translate(translator).split() ]])
+    return clean
 
 def download_log(remote_path, file_name, local_path):
     global cli
@@ -163,12 +175,19 @@ def get_fault_history():
     print("-------------Get Fault history END-------------")
     return fault_history
 
-def cnn_learning(model,X,y,max_len):
+def cnn_learning(model,X,y):
+    #shuffle the data
+    assert len(X)==len(y)
+    s=np.arange(len(X))
+    X=np.array(X)
+    y=np.array(y)
+    np.random.shuffle(s)
+    X=X[s]
+    y=y[s]
     train_num=int(len(X)*0.8)
     test_num=len(X)-train_num
     #X=pad_sequences(X, maxlen=max_len)
     #X_test=[np.array(x, dtype='float').reshape(len(x),1) for x in X[train_num:]]
-    X=np.array(X)
     X_test=X[train_num:]
     X_train=X[:train_num]
     y_test=np.array(y[train_num:])
@@ -186,13 +205,13 @@ def cnn_learning(model,X,y,max_len):
     mc = ModelCheckpoint('best_model.h5', monitor = 'val_acc', mode = 'max', verbose = 0, save_best_only = True)
     #history = model.fit(X_train, y_train, epochs = 40, validation_split = 0.2, callbacks=[es, mc], verbose=1)
     model.fit_generator(
-    generator(X_train, y_train),
-    validation_data=generator(X_valid, y_valid),
-    steps_per_epoch=len(X_train),
-    validation_steps=len(X_valid),
-    epochs=10, verbose=1, callbacks=[es,mc])
+        generator(X_train, y_train),
+        validation_data=generator(X_valid, y_valid),
+        steps_per_epoch=len(X_train),
+        validation_steps=len(X_valid),
+        epochs=20, verbose=0, callbacks=[es,mc])
 
-    return X_test, y_test
+    return model, X_test, y_test
 
 
 if __name__ == '__main__':
@@ -233,7 +252,7 @@ if __name__ == '__main__':
         #model.add(Dropout(0.2))
         submodels=[]
         for kw in (3,4,5):
-            conv=Conv1D(100, kw*embed_size, padding='valid', activation='relu', kernel_regularizer=l2(3),strides=embed_size)(model_input)
+            conv=Conv1D(100, kernel_size=(kw*embed_size,), padding='valid', activation='relu', kernel_regularizer=l2(3),strides=embed_size)(model_input)
             conv=GlobalMaxPooling1D()(conv)
             #conv=Flatten()(conv)
             submodels.append(conv)
@@ -244,12 +263,12 @@ if __name__ == '__main__':
         model.summary()
         model.compile(optimizer='adam', loss = 'binary_crossentropy', metrics = ['acc',f1_m,precision_m, recall_m])
     else:
-        model = load_model(args.model)
+        model = load_model(args.model, custom_objects={"f1_m":f1_m, "precision_m":precision_m, "recall_m":recall_m})
     #tf.debugging.set_log_device_placement(True)
     #devices = tf.config.experimental.list_physical_devices('GPU')
     #tf.config.experimental.set_memory_growth(devices[0], True)
-    win_size=5
-    gap=5
+    win_size=20
+    gap=3
     sliding=1
 
     log_corpus=[]
@@ -261,28 +280,34 @@ if __name__ == '__main__':
     for vnf in vnf_list:
         vnf_=vnf['vnf_name']
         print('Reading %d th VNF, %s'%(vnf['vnf_num'], vnf_))
-        log_dir_list=date_range("05-11",today)
+        log_dir_list=get_file_list(remote_path+vnf_+'/')
+        date_list=date_range("05-11",today)
         server='dpnm-82-'+vnf_[:3]
         fault_=fault_history[vnf['vnf_num']]['abnormal']+fault_history[vnf['vnf_num']]['fault']
-        for j in trange(len(log_dir_list)):
-            log_dir=log_dir_list[j]
+        for j in trange(len(date_list)):
+            log_dir = date_list[j]
+            if not log_dir in log_dir_list:
+                continue
             path_=remote_path+vnf_+'/'+log_dir+'/'
             log_file_list=get_file_list(path_)
             for file_name in log_file_list:
                 if file_name in ['sudo.log', 'CRON.log', 'stress-ng.log']:
                     continue
                 log = download_log(path_,file_name,local_path)
-                log_token=pre_process(log)
+                if file_name=='kernel.log':
+                    log_token = pre_process_error_only(log)
+                else:
+                    log_token=pre_process(log)
                 log_corpus.extend(log_token)
             #Download the server log also
-            path_=remote_path+server+'/'+log_dir+'/'
+            '''path_=remote_path+server+'/'+log_dir+'/'
             log_file_list=get_file_list(path_)
             for file_name in log_file_list:
-                if file_name in ['sudo.log', 'CRON.log', 'stress-ng.log', 'apache-access.log']:
+                if file_name in ['sudo.log', 'CRON.log', apache-access.log', 'neutron-openvswitch-agent.log', 'nova-compute.log']:
                     continue
                 log = download_log(path_,file_name,local_path)
                 log_token=pre_process(log)
-                log_corpus.extend(log_token)
+                log_corpus.extend(log_token)'''
 
             log_corpus=sorted(log_corpus, key= lambda x : x[0])
             date=datetime.strptime(log_dir,'%m-%d')
@@ -311,27 +336,32 @@ if __name__ == '__main__':
                     #if(len(input_log)>max_len):
                     #    input_log=input_log[:max_len+1]
                     X.append(input_log)
-                    if (date+timedelta(minutes=gap)).strftime( '%m-%d %H:%M') in fault_:
-                        y.append(1)
-                        y.append(1)
-                        X.append(input_log) #For over Sampling
-                        date+=timedelta(minutes=gap) ## Slide to after of Fault
-                        fault_num+=2
+                    if (date+timedelta(minutes=gap+win_size)).strftime( '%b-%d-%H:%M') in fault_:
+                        y.extend([1]*4)
+                        X.extend([input_log for _ in range(3)]) #For over Sampling
+                        date+=timedelta(minutes=gap+win_size) ## Slide to after of Fault
+                        fault_num+=4
                         continue
                     else:
                         y.append(0)
                 date+=timedelta(minutes=sliding)
-            print('\nlocal max : %d'%local_max_len)
-            with open('data_gap%d_win%d.bin'%(gap, win_size), 'a+b') as f:
-                pkl.dump([X,y], f)
-            print('\n%d number of data created and %d number of them are fault'%(len(X), fault_num))
+            #print('\nlocal max : %d'%local_max_len)
+            #with open('data_gap%d_win%d.bin'%(gap, win_size), 'a+b') as f:
+            #    pkl.dump([X,y], f)
+            #print('\n%d number of data created and %d number of them are fault'%(len(X), fault_num))
             X_len+=len(X)
             fault_len+=fault_num
-            X,y=cnn_learning(model, X,y,max_len)
+            model, X,y=cnn_learning(model, X,y)
             test_X.extend(X)
             test_y.extend(y)
+            #test_X=np.concatenate((test_X, X), axis=0)
+            #test_y=np.concatenate((test_y, y),axis=None)
             log_corpus=[]
-        loss, accuracy, f1_score, precision, recall = model.evaluate(test_X, test_y)
+        #test_X, test_y = np.array(test_X), np.array(test_y)
+        #print('X_test의 크기(shape) :',test_X.shape)
+        #print('y_test의 크기(shape) :',test_y.shape)
+        loss, accuracy, f1_score, precision, recall = model.evaluate_generator(
+                generator(test_X, test_y), steps= len(test_X))
         print("Read total %d number of data and %d of them are fault"%(X_len, fault_len))
         print("F1 : %.4f, Acc : %.4f, Prec : %.4f, Rec : %.4f"%(f1_score, accuracy, precision, recall))
         model.save("cnn_gap%d_win%d"%(gap, win_size))

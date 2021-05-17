@@ -83,11 +83,11 @@ if __name__ == '__main__':
     #nltk.download('stopwords')
     #stop_words=set(nltk.corpus.stopwords.words('english'))
     #print (stop_words)
-    translator = str.maketrans('', '', string.punctuation)
+    translator = str.maketrans(string.punctuation, ' '*len(string.punctuation))
     cli=paramiko.SSHClient()
     cli.set_missing_host_key_policy(paramiko.AutoAddPolicy)
     cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
-    model_= Word2Vec.load('embedding_with_log')
+    #model_= Word2Vec.load('embedding_with_log')
 
 
     log_corpus=[]
