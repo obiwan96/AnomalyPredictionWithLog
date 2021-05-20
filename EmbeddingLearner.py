@@ -87,13 +87,14 @@ if __name__ == '__main__':
     cli=paramiko.SSHClient()
     cli.set_missing_host_key_policy(paramiko.AutoAddPolicy)
     cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
-    #model_= Word2Vec.load('embedding_with_log')
+    model_= Word2Vec.load('embedding_with_log')
 
 
     log_corpus=[]
     #Get file names and paths of all log file except sudo.log, CRON.log, stress-ng.log
     host_list = get_file_list(remote_path)
     for i in range(len(host_list)):
+        if i<4:continue
         host=host_list[i]
         print( "Reading from %d th HOST start. Total : %d"%(i+1, len(host_list)) )
         print(" -------HOST name : "+host+"-------------")
