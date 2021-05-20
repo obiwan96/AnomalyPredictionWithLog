@@ -29,7 +29,7 @@ Total params: 120,601
 Trainable params: 120,601
 Non-trainable params: 0
 ```
-# RNN
+# CRNN
 ```
 __________________________________________________________________________________________________
 Layer (type)                    Output Shape         Param #     Connected to
