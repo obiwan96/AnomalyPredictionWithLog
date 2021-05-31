@@ -4,3 +4,4 @@ embedding_with_log.*
 cnn_gap*
 crnn_gap*
 models/
+__pycache__/

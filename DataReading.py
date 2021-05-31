@@ -22,12 +22,13 @@ remote_path='/mnt/hdd/log/'
 def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=False, over_sampling=1, under_sampling=0):
     wv= Word2Vec.load('embedding_with_log')
     embed_size=100
+    oov=np.array([1/embed_size**0.5]*embed_size)
     same_limit=5
     X=[]
     y=[]
     fault_len=0
     fault_end_date=None
-    for j in trange(len(date_list)):
+    for j in range(len(date_list)):
         log_dir = date_list[j]
         if fault_end_date:
             if datetime.strptime(log_dir,'%m-%d') < datetime.strptime(fault_end_date[:fault_end_date.find('-',4)],'%b-%d'):
@@ -77,8 +78,9 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
                     try:
                         input_log.extend(wv.wv.get_vector(word))
                     except:
-                        pass #Do not add OOV
+                        #pass #Do not add OOV
                         #input_log.extend(np.zeros(embed_size))
+                        input_log.extend(oov)
             if use_emptylog and len(input_log) ==0:
                 input_log=np.zeros(5*embed_size)
             assert len(input_log)%embed_size==0
@@ -120,10 +122,10 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
                     date+=timedelta(minutes=gap+win_size+sliding-1) ## Slide to after of abnormal
                     continue
                 else:
-                    #find in near.
+                    #Pr-faults tagging
                     abnormal=False
                     fault=False
-                    for i in range(5):
+                    for i in range(0):
                         if (date+timedelta(minutes=gap+win_size+sliding+i)).strftime('%b-%d-%H:%M') in fault_['abnormal']:
                             abnormal=True
                             break
@@ -135,7 +137,7 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
                             break
                     if abnormal or fault:
                         X.append(input_log)
-                        y.append(0.6)
+                        y.append(0.65)
                     elif random.choice([True]+[False for i in range(under_sampling)]):
                         X.append(input_log)
                         y.append(0)
