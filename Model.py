@@ -14,26 +14,7 @@ import pickle as pkl
 
 embed_size=100
 
-#To use F1 score as metric
-#Based on https://datascience.stackexchange.com/questions/45165/how-to-get-accuracy-f1-precision-and-recall-for-a-keras-model
-def recall_m(y_true, y_pred):
-    true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
-    possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
-    recall = true_positives / (possible_positives + K.epsilon())
-    return recall
-
-def precision_m(y_true, y_pred):
-    true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
-    predicted_positives = K.sum(K.round(K.clip(y_pred, 0, 1)))
-    precision = true_positives / (predicted_positives + K.epsilon())
-    return precision
-
-def f1_m(y_true, y_pred):
-    precision = precision_m(y_true, y_pred)
-    recall = recall_m(y_true, y_pred)
-    return 2*((precision*recall)/(precision+recall+K.epsilon()))
-
-def evaluation(model,test_X,test_y, rnn_based=False):
+def evaluation(model,test_X,test_y, rnn_based=False, threshold=0.8,print_result=False):
     if rnn_based:
         y_all=[]
         y_pred=[]
@@ -42,10 +23,11 @@ def evaluation(model,test_X,test_y, rnn_based=False):
             y_pred.extend(y)
             y_all.extend(test_y[i])
             model.reset_states()
+        y_pred=np.array(y_pred)
         test_y=y_all
     else:
         y_pred = model.predict_generator(generator(test_X, test_y), steps= len(test_X))
-    y_pred=np.where(y_pred>0.81, 1,0)
+    y_pred=np.where(y_pred>threshold, 1,0)
     test_y=np.array(test_y)
     y_test=np.where(test_y>0.8, 1,0)
     right=0
@@ -62,12 +44,16 @@ def evaluation(model,test_X,test_y, rnn_based=False):
                 fp+=1.0
         elif y_test[i]:
             fn+=1.0
+    accuracy = right/(len(y_pred)+K.epsilon())
     precision=tp/(tp+fp+ K.epsilon())
     recall=tp/(tp+fn+ K.epsilon())
     f1=2*recall*precision/(recall+precision+K.epsilon())
-    print('acc : %4f'%(right/(len(y_pred)+ K.epsilon()))+' precision : %4f'%(precision)+
-            ' recall : %4f'%(recall)+' f1 : %4f'%(f1))
-    print('-----------------------------------------------')
+    if print_result:
+        print('tp : %d'%(tp)+' fp : %d'%(fp)+ ' fn : %d'%(fn))
+        print('acc : %4f'%(right/(len(y_pred)+ K.epsilon()))+' precision : %4f'%(precision)+
+               ' recall : %4f'%(recall)+' f1 : %4f'%(f1))
+        print('-----------------------------------------------')
+    return accuracy, recall, f1
 
 def save_for_roc(model, X_test, y_test):
     y_pred = model.predict_generator(generator(X_test, y_test), steps= len(X_test))
@@ -76,53 +62,60 @@ def save_for_roc(model, X_test, y_test):
         pkl.dump(roc, f)
     print("roc data saved")
 
+def KL_dv_loss(y_true, y_pred):
+    eps=K.epsilon()
+    class_weight=100
+    y_true=tf.cast(y_true, tf.float32)
+    custom_loss=class_weight*y_true*tf.math.log(y_true/(y_pred+eps)+eps)+(1-y_true)*tf.math.log((1-y_true)/(1-y_pred+eps)+eps)
+    return custom_loss
 
-def CNN_model(recurrent_model=None):
+def CNN_model(recurrent_model=None, filter_num=3):
     if recurrent_model:
         model_input=Input(batch_shape=(1,None,1))
     else:
         model_input=Input(shape=(None,1))
-    #model=Sequential()
-    #model.add(Embedding(vocab_size, 32))
-    #model.add(Dropout(0.2))
     submodels=[]
-    for kw in (3,4,5):
-        conv=Conv1D(100, kernel_size=(kw*embed_size,), padding='valid', activation='relu', kernel_regularizer=l2(3),strides=embed_size)(model_input)
+    for kw in range(3,3+filter_num):
+        conv=Conv1D(100, kernel_size=(kw*embed_size,), padding='valid', activation='relu', kernel_regularizer=l2(0.01),strides=embed_size)(model_input)
         conv=GlobalMaxPooling1D()(conv)
-        #conv=Flatten()(conv)
         submodels.append(conv)
     z=Concatenate()(submodels)
-    z=Dropout(0.5)(z)
+    z=Dropout(0.3)(z)
     if recurrent_model:
         z=Reshape(target_shape=((1,300)))(z)
         if recurrent_model=='gru':
-            z=GRU(128, stateful=True,batch_input_shape=(1,300,1))(z)
+            z=GRU(128, stateful=True,batch_input_shape=(1,300,1), dropout=0.2, recurrent_dropout=0.2)(z)
         elif recurrent_model=='lstm':
             z=LSTM(128, stateful=False)(z)
         elif recurrent_model=='rnn':
             z=SimpleRNN(128, stateful=False)(z)
+    z=Dense(100, activation='relu', kernel_regularizer=l2(0.01))(z)
+    z=Dropout(0.3)(z)
     model_output=Dense(1,activation='sigmoid')(z)
     model=Model(model_input, model_output)
     #model.summary()
-    model.compile(optimizer='adam', loss = 'binary_crossentropy', metrics = ['acc'])
-    #model.compile(optimizer='adam', loss = 'binary_crossentropy', metrics = ['acc',f1_m,precision_m, recall_m])
+    model.compile(optimizer='adam', loss = KL_dv_loss, metrics = ['acc'])
     return model
 
 def RNN_model():
     model_input=Input(shape=(None,1))
-    z=SimpleRNN(256)(model_input)
+    z=SimpleRNN(256,activation='relu',kernel_regularizer=l2(0.01))(model_input)
+    z=Dense(100, activation='relu', kernel_regularizer=l2(0.01))(z)
+    z=Dropout(0.3)(z)
     model_output=Dense(1,activation='sigmoid')(z)
     model=Model(model_input, model_output)
     #model.summary()
-    model.compile(optimizer='adam', loss = 'binary_crossentropy', metrics = ['acc'])
+    model.compile(optimizer='adam', loss = KL_dv_loss, metrics = ['acc'])
     return model
 
 def GRU_model():
     model_input=Input(shape=(None,1))
-    z=GRU(256)(model_input)
+    z=GRU(256,activation='relu',kernel_regularizer=l2(0.01))(model_input)
+    z=Dense(100, activation='relu', kernel_regularizer=l2(0.01))(z)
+    z=Dropout(0.3)(z)
     model_output=Dense(1,activation='sigmoid')(z)
     model=Model(model_input, model_output)
     #model.summary()
-    model.compile(optimizer='adam', loss = 'binary_crossentropy', metrics = ['acc'])
+    model.compile(optimizer='adam', loss = KL_dv_loss, metrics = ['acc'])
     return model
 

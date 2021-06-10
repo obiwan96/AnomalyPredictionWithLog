@@ -19,10 +19,11 @@ import random
 local_path='/home/dpnm/tmp/'
 remote_path='/mnt/hdd/log/'
 
-def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=False, over_sampling=1, under_sampling=0):
+def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=False, over_sampling=1, under_sampling=0, pre_fault_size=5,pre_fault_value=0.65):
     wv= Word2Vec.load('embedding_with_log')
     embed_size=100
-    oov=np.array([1/embed_size**0.5]*embed_size)
+    #oov=np.array([1/embed_size**0.5]*embed_size)
+    max_fil_size=win_size//2+3
     same_limit=5
     X=[]
     y=[]
@@ -43,7 +44,7 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
             elif file_name in ['sudo.log', 'CRON.log', 'stress-ng.log']:
                 continue
             log = download_log(path_,file_name,local_path)
-            if file_name=='kernel.log':
+            if file_name in ['kernel.log', 'ovs-vswitchd.log']:
                 log_token = pre_process_error_only(log)
             else:
                 log_token=pre_process(log)
@@ -80,9 +81,9 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
                     except:
                         #pass #Do not add OOV
                         #input_log.extend(np.zeros(embed_size))
-                        input_log.extend(oov)
+                        input_log.extend(np.random.rand(embed_size))
             if use_emptylog and len(input_log) ==0:
-                input_log=np.zeros(5*embed_size)
+                input_log=np.zeros((win_size)*embed_size)
             assert len(input_log)%embed_size==0
             abnormal=False
             fault=False
@@ -99,8 +100,8 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
                 if fault:
                     break
             if not len(input_log)==0:
-                if len(input_log)<5*embed_size:
-                    input_log.extend(np.zeros(5*embed_size-len(input_log)))
+                if len(input_log)<max_fil_size*embed_size:
+                    input_log.extend(np.zeros(max_fil_size*embed_size-len(input_log)))
                 if fault or abnormal:
                     #Not seperate right now.
                     #TODO: seperate learning fault and abnormal
@@ -117,7 +118,7 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
                                 fault_end_date=None
                                 continue
                         else:
-                            print("Read total %d number of data and %d of them are fault"%(len(X), fault_len))
+                            #print("Read total %d number of data and %d of them are fault"%(len(X), fault_len))
                             return X,y, fault_len
                     date+=timedelta(minutes=gap+win_size+sliding-1) ## Slide to after of abnormal
                     continue
@@ -125,7 +126,7 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
                     #Pr-faults tagging
                     abnormal=False
                     fault=False
-                    for i in range(0):
+                    for i in range(pre_fault_size):
                         if (date+timedelta(minutes=gap+win_size+sliding+i)).strftime('%b-%d-%H:%M') in fault_['abnormal']:
                             abnormal=True
                             break
@@ -137,12 +138,12 @@ def make_data(vnf, fault_, win_size, gap, date_list, sliding=1, use_emptylog=Fal
                             break
                     if abnormal or fault:
                         X.append(input_log)
-                        y.append(0.65)
+                        y.append(pre_fault_value)
                     elif random.choice([True]+[False for i in range(under_sampling)]):
                         X.append(input_log)
                         y.append(0)
             date+=timedelta(minutes=sliding)
-    print("Read total %d number of data and %d of them are fault"%(len(X), fault_len))
+    #print("Read total %d number of data and %d of them are fault"%(len(X), fault_len))
     return X,y, fault_len
 
 def pre_process(text):
@@ -171,11 +172,12 @@ def pre_process_error_only(text):
     translator = str.maketrans(string.punctuation, ' '*(len(string.punctuation)))
     clean =[]
     for each in text.split('\n'):
-        if (not 'error' in each) and (not 'fail' in each) and (not 'Reset' in each):
-            continue
-        #Todo : How to use number information??
-        clean.append(tuple([datetime.strptime(each[:12], "%b %d %H:%M"), tuple([x.lower() for x in  re.sub(r'[0-9]+',
-            '', each[each.find(':',19)+1:]).translate(translator).split() ])]))
+        each=each.lower()
+        for error_word in ['error', 'reset', 'fail', 'not', 'fault']:
+            if error_word in each:
+                #Todo : How to use number information??
+                clean.append(tuple([datetime.strptime(each[:12], "%b %d %H:%M"), tuple([x for x in  re.sub(r'[0-9]+',
+                    '', each[each.find(':',19)+1:]).translate(translator).split() ])]))
     return clean
 
 def download_log(remote_path, file_name, local_path):
@@ -241,18 +243,18 @@ def fault_tagging(vnf_num):
     return fault
 
 def get_fault_history(vnf_num):
-    print("Get Fault history")
+    #print("Get Fault history")
     fault_history={}
-    #with open ('../server_info.yaml') as f:
-    #    server_info=yaml.load(f)['FaultHistory']
-    #cli=paramiko.SSHClient()
-    #cli.set_missing_host_key_policy(paramiko.AutoAddPolicy)
-    #cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
-    #try:
-    #    with SCPClient(cli.get_transport()) as scp:
-    #        scp.get('/home/ubuntu/fault_history.yaml',local_path)
-    #except SCPException:
-    #    raise SCPException.message
+    with open ('../server_info.yaml') as f:
+        server_info=yaml.load(f)['FaultHistory']
+    cli=paramiko.SSHClient()
+    cli.set_missing_host_key_policy(paramiko.AutoAddPolicy)
+    cli.connect(server_info['ip'], port=22, username=server_info['id'], password=server_info['pwd'])
+    try:
+        with SCPClient(cli.get_transport()) as scp:
+            scp.get('/home/ubuntu/fault_history.yaml',local_path)
+    except SCPException:
+        raise SCPException.message
     with open(local_path+'fault_history.yaml')as f:
         fault_history=yaml.load(f)
     return fault_history[vnf_num]
